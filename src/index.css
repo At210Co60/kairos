@@ -1,0 +1,29 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  /* clip（而非 hidden）：完全禁止一切滚动（包括程序滚动），
+     防止整页被滚走导致标题栏/窗口按钮移出视野 */
+  overflow: clip;
+  background: transparent;
+}
+
+body {
+  font-family: 'Segoe UI Variable Display', 'Segoe UI', 'Microsoft YaHei UI',
+    system-ui, sans-serif;
+  color: #f4f4f8;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  user-select: none;
+}
+
+input {
+  user-select: text;
+}
