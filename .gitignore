@@ -15,6 +15,10 @@ dist-ssr
 # Playwright MCP 本地测试产物
 .playwright-mcp/
 
+# 本地检查截图与下载存档(不入库)
+kairos-*.png
+lhm.zip
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

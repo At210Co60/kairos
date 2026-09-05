@@ -31,6 +31,7 @@ textarea {
 }
 
 /* ===== 悬浮窗容器（窗口透明，容器负责圆角与底色） ===== */
+/* 静态彩色渐变底：紫 / 蓝 / 青三团颜色，无任何动画效果 */
 .kairos-root {
   position: relative;
   height: 100%;
@@ -38,63 +39,15 @@ textarea {
   flex-direction: column;
   overflow: clip;
   border-radius: 8px;
-  background: rgba(12, 12, 22, 0.92);
+  background:
+    radial-gradient(560px 560px at 20% 10%, rgba(124, 58, 237, 0.72), transparent 88%),
+    radial-gradient(520px 520px at 88% 92%, rgba(37, 99, 235, 0.78), transparent 88%),
+    radial-gradient(380px 380px at 55% 58%, rgba(6, 182, 212, 0.45), transparent 88%),
+    rgba(12, 12, 22, 0.92);
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.orb {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(72px);
-  opacity: 0.6;
-  pointer-events: none;
-  animation: orb-drift 26s ease-in-out infinite alternate;
-}
-
-.orb-violet {
-  width: 430px;
-  height: 430px;
-  background: #7c3aed;
-  top: -110px;
-  left: 16%;
-}
-
-.orb-blue {
-  width: 370px;
-  height: 370px;
-  background: #2563eb;
-  bottom: -90px;
-  right: 6%;
-  animation-duration: 34s;
-  animation-delay: -9s;
-}
-
-.orb-cyan {
-  width: 260px;
-  height: 260px;
-  background: #06b6d4;
-  top: 38%;
-  left: 52%;
-  opacity: 0.42;
-  animation-duration: 21s;
-  animation-delay: -13s;
-}
-
-@keyframes orb-drift {
-  from {
-    transform: translate(0, 0) scale(1);
-  }
-  to {
-    transform: translate(64px, 44px) scale(1.14);
-  }
-}
-
-/* 滤镜定义容器不占布局 */
-.lg-defs {
-  position: absolute;
-  width: 0;
-  height: 0;
-}
+/* 液态玻璃：静态彩色背景 + 卡片半透明模糊（纯 CSS，零动画零循环） */
 
 /* ===== 标题栏（拖动区 + 窗口控制） ===== */
 .kairos-titlebar {
@@ -108,6 +61,8 @@ textarea {
   padding: 0 12px;
   flex-shrink: 0;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent);
+  /* Electron 无边框窗口拖动区（data-tauri-drag-region 是 Tauri 专属，此处无效） */
+  -webkit-app-region: drag;
 }
 
 .kairos-titlebar-name {
@@ -123,6 +78,7 @@ textarea {
 }
 
 .win-btn {
+  -webkit-app-region: no-drag;
   width: 22px;
   height: 22px;
   display: grid;
@@ -171,49 +127,19 @@ textarea {
   border-radius: 16px;
   background: linear-gradient(
     135deg,
-    rgba(255, 255, 255, 0.1) 0%,
-    rgba(255, 255, 255, 0.03) 38%,
+    rgba(255, 255, 255, 0.09) 0%,
+    rgba(255, 255, 255, 0.03) 45%,
     rgba(255, 255, 255, 0.06) 100%
   );
   border: 1px solid rgba(255, 255, 255, 0.14);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.28),
-    inset 1px 0 0 rgba(255, 255, 255, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    inset 1px 0 0 rgba(255, 255, 255, 0.09),
     inset 0 -1px 0 rgba(255, 255, 255, 0.05),
     0 18px 44px rgba(0, 0, 0, 0.38);
   overflow: clip;
-  transition: background 0.15s, border-color 0.15s;
-  backdrop-filter: url(#kairos-refract) blur(7px) saturate(170%) brightness(1.06);
-}
-
-/* 缓慢扫过卡面的镜面光带 */
-.module-card::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  z-index: 2;
-  background: linear-gradient(
-    115deg,
-    transparent 32%,
-    rgba(255, 255, 255, 0.04) 46%,
-    rgba(255, 255, 255, 0.1) 50%,
-    rgba(255, 255, 255, 0.04) 54%,
-    transparent 68%
-  );
-  background-size: 240% 240%;
-  animation: lg-sheen 16s ease-in-out infinite;
-}
-
-@keyframes lg-sheen {
-  0%,
-  100% {
-    background-position: 120% 0%;
-  }
-  50% {
-    background-position: -20% 0%;
-  }
+  transition: border-color 0.15s;
+  backdrop-filter: blur(14px) saturate(150%);
 }
 
 /* GSAP 悬停聚光灯：--mx/--my 由指针驱动（App.tsx 委托） */
@@ -358,12 +284,8 @@ textarea {
 
 .wd-card {
   border-radius: 12px;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.03));
-  border: 1px solid rgba(255, 255, 255, 0.11);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.18),
-    0 6px 18px rgba(0, 0, 0, 0.22);
-  backdrop-filter: blur(10px) saturate(150%);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.09);
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
@@ -908,10 +830,9 @@ textarea {
 
 .glass-card {
   border-radius: 12px;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.03));
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
-  backdrop-filter: blur(10px) saturate(150%);
+  /* 嵌在玻璃卡片内部：只做轻透明底，不叠加二次 backdrop-filter（避免玻璃套玻璃） */
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.09);
   text-align: left;
 }
 
@@ -1147,6 +1068,26 @@ textarea {
   color: rgba(255, 255, 255, 0.5);
 }
 
+/* 昨日同时刻温度对比 */
+.weather-yday {
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.weather-yday .up {
+  color: #f87171;
+}
+
+.weather-yday .down {
+  color: #60a5fa;
+}
+
+/* 日出日落 · 昼长（展开页） */
+.weather-sun {
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.55);
+}
+
 .weather-days {
   display: flex;
   gap: 8px;
@@ -1289,6 +1230,20 @@ textarea {
   color: rgba(255, 255, 255, 0.4);
   font-weight: 400;
   margin-left: 5px;
+}
+
+/* 每个传感器一组的容器（标签行 + 进度条） */
+.sysmon-metric {
+  margin-bottom: 7px;
+}
+
+/* 条形图下方的传感器小字行（温度/风扇/频率等） */
+.sysmon-sub {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9.5px;
+  color: rgba(255, 255, 255, 0.45);
+  margin: -3px 0 3px;
 }
 
 .sysmon-bar {

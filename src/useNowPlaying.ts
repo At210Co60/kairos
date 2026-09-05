@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
+import { invoke, inTauri, listen } from './lib/tauri'
 import type { LyricsPayload, PlaybackProgress, TrackMeta } from './types'
 
-export const inTauri = '__TAURI_INTERNALS__' in window
+// 事件桥可用（Electron 环境）；纯浏览器预览时为 false
+export { inTauri }
 
 export function useNowPlaying() {
   const [meta, setMeta] = useState<TrackMeta | null>(null)

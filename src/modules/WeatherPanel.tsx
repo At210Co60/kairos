@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import gsap from 'gsap'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from '../lib/tauri'
 // 动画天气图标：@meteocons/svg（MIT License）© Bas Milius
 // https://github.com/basmilius/meteocons
 import iconClearDay from '@meteocons/svg/fill/clear-day.svg?url'
@@ -69,6 +69,9 @@ interface DailyForecast {
   windSpeedMax: number | null
   windGustsMax: number | null
   windDirectionDominant: number | null
+  sunrise: string | null
+  sunset: string | null
+  daylightDuration: number | null
 }
 
 interface WeatherData {
@@ -138,6 +141,14 @@ function dayLabel(dateStr: string, index: number) {
   if (index === 1) return '明天'
   const [y, m, d] = dateStr.split('-').map(Number)
   return WEEK[new Date(y, m - 1, d).getDay()]
+}
+
+/** 秒 → 「12小时28分」 */
+function fmtDuration(sec: number | null | undefined): string {
+  if (sec == null) return '—'
+  const h = Math.floor(sec / 3600)
+  const m = Math.round((sec % 3600) / 60)
+  return `${h}小时${String(m).padStart(2, '0')}分`
 }
 
 /** 逐小时图表跨天分隔线标签（图表最多跨 1 天，切换处即明天） */
@@ -261,7 +272,7 @@ function DailyTrend({ daily }: { daily: DailyForecast[] }) {
 
   if (daily.length === 0) return null
   const W = 1000
-  const H = 250
+  const H = 264
   let maxT = Math.max(...daily.map((d) => d.tempMax))
   let minT = Math.min(...daily.map((d) => d.tempMin))
   if (maxT === minT) maxT = minT + 1
@@ -283,7 +294,7 @@ function DailyTrend({ daily }: { daily: DailyForecast[] }) {
             key={`p${d.date}`}
             className="wd-bar"
             x={x(i) - 9}
-            y={188 - barH}
+            y={194 - barH}
             width={18}
             height={barH}
             rx={2}
@@ -304,14 +315,17 @@ function DailyTrend({ daily }: { daily: DailyForecast[] }) {
             <text x={x(i)} y={y(d.tempMin) + 14} textAnchor="middle" fontSize={11} fill="#93c5fd">
               {Math.round(d.tempMin)}°
             </text>
-            <text x={x(i)} y={205} textAnchor="middle" fontSize={14}>
+            <text x={x(i)} y={207} textAnchor="middle" fontSize={14}>
               {wmo(d.weatherCode).icon}
             </text>
-            <text x={x(i)} y={226} textAnchor="middle" fontSize={10} fill="rgba(255,255,255,0.6)">
+            <text x={x(i)} y={227} textAnchor="middle" fontSize={10} fill="rgba(255,255,255,0.6)">
               {dayLabel(d.date, i)}
             </text>
+            <text x={x(i)} y={243} textAnchor="middle" fontSize={9} fill="rgba(255,255,255,0.35)">
+              {d.date.slice(5).replace('-', '/')}
+            </text>
             {(d.precipProbability ?? 0) > 0 && (
-              <text x={x(i)} y={242} textAnchor="middle" fontSize={9} fill="#93c5fd">
+              <text x={x(i)} y={259} textAnchor="middle" fontSize={9} fill="#93c5fd">
                 雨{d.precipProbability}%
               </text>
             )}
@@ -322,10 +336,27 @@ function DailyTrend({ daily }: { daily: DailyForecast[] }) {
   )
 }
 
-/** 15 日列表：逐日 天气/温度/降水/紫外线/最大风 */
+/** 15 日列表：逐日 天气/温度/降水/紫外线/最大风（入场逐行浮现） */
 function DailyList({ daily }: { daily: DailyForecast[] }) {
+  const boxRef = useRef<HTMLDivElement | null>(null)
+
+  useLayoutEffect(() => {
+    const el = boxRef.current
+    if (!el) return
+    const ctx = gsap.context(() => {
+      gsap.from('.wd-dlist-row', {
+        y: 12,
+        opacity: 0,
+        stagger: 0.028,
+        duration: 0.35,
+        ease: 'power2.out',
+      })
+    }, el)
+    return () => ctx.revert()
+  }, [])
+
   return (
-    <div className="wd-dlist">
+    <div ref={boxRef} className="wd-dlist">
       <div className="wd-dlist-row wd-dlist-head">
         <span>日期</span>
         <span>天气</span>
@@ -571,6 +602,79 @@ function WeatherScene({ code, isDay }: { code: number; isDay: boolean }) {
   )
 }
 
+/** 记住上次查询的城市 */
+const CITY_KEY = 'kairos.weather.city'
+/** 通知去重记录 */
+const NOTIFY_KEY = 'kairos.weather.alerts'
+
+/**
+ * 天气提醒（Electron 通知，每日每类一次）：
+ * 1) 未来 12h 降水概率 ≥70% → 带伞提醒
+ * 2) 明日最低温较今日下降 ≥5°C → 降温提醒
+ * 3) 今日紫外线 ≥8 → 防晒提醒
+ */
+function checkAlerts(place: GeoPlace, data: WeatherData) {
+  if (!place.name || !window.kairos) return
+  try {
+    const now = new Date()
+    const dayKey = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`
+    const key = (t: string) => `${dayKey}|${place.name}|${t}`
+    const records = (): string[] => {
+      try {
+        return JSON.parse(localStorage.getItem(NOTIFY_KEY) || '[]')
+      } catch {
+        return []
+      }
+    }
+    const fired = (k: string) => records().includes(k)
+    const fire = (k: string, title: string, body: string) => {
+      if (fired(k)) return
+      window.kairos!.notify(title, body)
+      const next = records()
+      next.push(k)
+      if (next.length > 400) next.splice(0, next.length - 400)
+      localStorage.setItem(NOTIFY_KEY, JSON.stringify(next))
+    }
+
+    const nowMs = Date.now()
+    const rainPeak = (data.hourly || [])
+      .filter((h) => {
+        const t = new Date(h.time).getTime()
+        return t >= nowMs && t - nowMs <= 12 * 3600 * 1000
+      })
+      .reduce((m, h) => Math.max(m, h.precipProbability ?? 0), 0)
+    if (rainPeak >= 60) {
+      fire(key('rain'), `${place.name} 未来 12 小时有雨`, `降水概率最高 ${rainPeak}%，出门记得带伞`)
+    }
+
+    const lt = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+    const fut = (data.daily || []).filter((d) => d.date >= lt)
+    if (fut.length >= 2 && fut[0].tempMin - fut[1].tempMin >= 5) {
+      fire(
+        key('cold'),
+        `${place.name} 明晨降温`,
+        `明天最低 ${Math.round(fut[1].tempMin)}°C，比今天低 ${Math.round(fut[0].tempMin - fut[1].tempMin)}°C，注意添衣`,
+      )
+    }
+    const uvMax = fut[0]?.uvIndexMax ?? 0
+    if (uvMax >= 8) {
+      fire(key('uv'), `${place.name} 今日紫外线强`, `紫外线指数最高 ${uvMax}，外出注意防晒`)
+    }
+
+    // 每日简报：每天首次拿到数据后必发一条，保证通知功能可见
+    const t0 = fut[0]
+    if (t0) {
+      fire(
+        key('brief'),
+        `${place.name} · 今日天气`,
+        `${wmo(t0.weatherCode).desc} ${Math.round(t0.tempMax)}°/${Math.round(t0.tempMin)}°，降水概率 ${t0.precipProbability ?? 0}%`,
+      )
+    }
+  } catch {
+    // 提醒失败不影响天气展示
+  }
+}
+
 export default function WeatherPanel({ expanded }: { expanded: boolean }) {
   const now = new Date()
   const dateLabel = `${now.getMonth() + 1}月${now.getDate()}日 ${WEEK[now.getDay()]}`
@@ -584,6 +688,7 @@ export default function WeatherPanel({ expanded }: { expanded: boolean }) {
   const [dailyView, setDailyView] = useState<'line' | 'list'>('line')
   const placeRef = useRef<GeoPlace | null>(null)
   const panelRef = useRef<HTMLDivElement | null>(null)
+  const bootedRef = useRef(false)
 
   // 展开时的内容渐进入场：温度 → 详情卡 → 15日预报 → 云量条纹逐条生长
   useLayoutEffect(() => {
@@ -628,6 +733,7 @@ export default function WeatherPanel({ expanded }: { expanded: boolean }) {
       ])
       setW(data)
       setAq(air)
+      checkAlerts(place, data)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -636,7 +742,7 @@ export default function WeatherPanel({ expanded }: { expanded: boolean }) {
   }, [])
 
   const fetchByCity = useCallback(
-    async (name: string) => {
+    async (name: string, opts?: { persist?: boolean }) => {
       const kw = name.trim()
       if (!kw) return
       setBusy(true)
@@ -650,8 +756,10 @@ export default function WeatherPanel({ expanded }: { expanded: boolean }) {
         }
         const place = places[0]
         placeRef.current = place
+        setQuery(place.name)
         setCityName(place.name)
         setCityHint([place.admin1, place.country].filter(Boolean).join(' · '))
+        if (opts?.persist !== false) localStorage.setItem(CITY_KEY, place.name)
         await fetchByPlace(place)
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
@@ -661,16 +769,47 @@ export default function WeatherPanel({ expanded }: { expanded: boolean }) {
     [fetchByPlace],
   )
 
+  // 启动：记住的上次城市 > IP 自动定位 > 上海兜底
   useEffect(() => {
-    fetchByCity('上海')
-    const timer = setInterval(() => {
-      if (placeRef.current) fetchByPlace(placeRef.current)
-    }, 30 * 60 * 1000)
-    return () => clearInterval(timer)
+    if (bootedRef.current) return
+    bootedRef.current = true
+    const saved = localStorage.getItem(CITY_KEY)
+    if (saved) {
+      setQuery(saved)
+      fetchByCity(saved, { persist: false })
+    } else {
+      invoke<GeoPlace | null>('weather_ip_locate')
+        .then((place) => {
+          if (place) {
+            placeRef.current = place
+            setQuery(place.name)
+            setCityName(place.name)
+            setCityHint([place.admin1, place.country].filter(Boolean).join(' · '))
+            localStorage.setItem(CITY_KEY, place.name)
+            fetchByPlace(place)
+          } else {
+            fetchByCity('上海')
+          }
+        })
+        .catch(() => fetchByCity('上海'))
+    }
   }, [fetchByCity, fetchByPlace])
 
-  const today = w?.daily[0]
+  // 数据中的「今天起」的逐日预报（后端含 past_days，需滤掉昨天）
+  const localToday = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  const dailyFuture = w ? w.daily.filter((d) => d.date >= localToday) : []
+  const today = dailyFuture[0]
   const cur = w?.current
+
+  // 昨日同一时刻温度（hourly 含 past_days=1 的过去 24h）
+  const yesterTemp = (() => {
+    if (!w || !cur || w.hourly.length === 0) return null
+    const yDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)
+    const yStr = `${yDate.getFullYear()}-${String(yDate.getMonth() + 1).padStart(2, '0')}-${String(yDate.getDate()).padStart(2, '0')}`
+    const stamp = `${yStr}T${cur.time.slice(11, 13)}:00`
+    const hit = w.hourly.find((h) => h.time.startsWith(stamp))
+    return hit ? hit.temperature : null
+  })()
 
   // 展开详情数据
   const uv = cur?.uvIndex ?? null
@@ -737,6 +876,23 @@ export default function WeatherPanel({ expanded }: { expanded: boolean }) {
               </>
             )}
           </p>
+          {/* 昨日对比（小时级数据含 past_days） */}
+          {yesterTemp != null && cur && Math.abs(cur.temperature - yesterTemp) >= 0.4 && (
+            <p className="weather-yday">
+              较昨日同时
+              <span className={cur.temperature >= yesterTemp ? 'up' : 'down'}>
+                {cur.temperature >= yesterTemp ? ' ↑' : ' ↓'}{' '}
+                {Math.abs(cur.temperature - yesterTemp).toFixed(1)}°C
+              </span>
+            </p>
+          )}
+          {/* 日出日落与昼长（仅展开页） */}
+          {expanded && today?.sunrise && today.sunset && (
+            <p className="weather-sun">
+              🌅 {today.sunrise.slice(11, 16)} · 🌇 {today.sunset.slice(11, 16)} · 昼长{' '}
+              {fmtDuration(today.daylightDuration)}
+            </p>
+          )}
         </>
       ) : (
         <p className="panel-note">{error ? `⚠ ${error}` : '数据加载中…'}</p>
@@ -746,7 +902,7 @@ export default function WeatherPanel({ expanded }: { expanded: boolean }) {
       {/* 4 天横条只用于小卡片；展开页的逐日信息由「15 日预报」区块承担 */}
       {w && cur && !expanded && (
         <div className="weather-days">
-          {w.daily.slice(0, 4).map((d, i) => (
+          {dailyFuture.slice(0, 4).map((d, i) => (
             <div key={d.date} className="weather-day">
               <p>{dayLabel(d.date, i)}</p>
               <p className="weather-day-icon">{wmo(d.weatherCode).icon}</p>
@@ -822,7 +978,7 @@ export default function WeatherPanel({ expanded }: { expanded: boolean }) {
                     </button>
                   </div>
                 </div>
-                {dailyView === 'line' ? <DailyTrend daily={w.daily} /> : <DailyList daily={w.daily} />}
+                {dailyView === 'line' ? <DailyTrend daily={dailyFuture} /> : <DailyList daily={dailyFuture} />}
               </div>
 
               <div className="wd-card wd-cloud">
