@@ -17,6 +17,7 @@ interface GpuInfo {
   memClock: number | null // MHz
   coreClock: number | null // MHz
   fan: number | null
+  maxFan: number | null // 联想 WMI 报告的风扇上限 RPM
   vramStatic: string | null
 }
 
@@ -25,6 +26,7 @@ interface Stats {
   cpuFreqGHz: number | null
   cpuTemp: number | null
   fanCpu: number | null
+  maxFanCpu: number | null // 联想 WMI 报告的风扇上限 RPM（无则用 3500 标尺）
   memUsed: number
   memTotal: number
   disks: Array<{
@@ -148,7 +150,7 @@ export default function SystemPanel() {
       <Metric
         label="CPU 风扇"
         value={stats.fanCpu}
-        max={3500}
+        max={stats.maxFanCpu ?? 3500}
         color="linear-gradient(90deg,#10b981,#4ade80)"
         text={stats.fanCpu != null ? `${stats.fanCpu} RPM` : '—'}
       />
@@ -191,7 +193,7 @@ export default function SystemPanel() {
           <Metric
             label="GPU 风扇"
             value={gpu.fan}
-            max={3500}
+            max={gpu.maxFan ?? 3500}
             color="linear-gradient(90deg,#10b981,#4ade80)"
             text={gpu.fan != null ? `${gpu.fan} RPM` : '—'}
           />

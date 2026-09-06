@@ -4,7 +4,8 @@
 // - CPU 实际频率：性能计数器 % Processor Performance × 基础频率
 //   （WMI CurrentClockSpeed 只报基础频率，锁在 2.5G；性能计数器反映睿频）
 // - CPU 温度：si.cpuTemperature（WMI，部分主板无效）→ LibreHardwareMonitor 流兜底 → null
-// - 风扇：仅 LHM WMI（systeminformation 不支持风扇）
+// - 风扇：联想拯救者走 Lenovo WMI（LENOVO_OTHER_METHOD/LENOVO_FAN_METHOD，与
+//   Lenovo Legion Toolkit 同款，需管理员权限）；其他机器 LHM WMI 兜底（si 不支持风扇）
 // - GPU：nvidia-smi 常驻进程 1s 刷新（利用率/温度/显存占用/显存频率/核心频率，NVIDIA）
 // - 磁盘：按物理盘分组（Win32 分区关联映射），每组 = 卷容量合计 + 忙碌%
 //   （PerfDisk 计数器）+ 温度（Get-StorageReliabilityCounter，需管理员权限，失败返回 null）
@@ -251,19 +252,59 @@ try {
   })
 }
 
-// ---------- 联想 GameZone 风扇守护（拯救者 EC 风扇，需管理员权限） ----------
+// ---------- 联想风扇守护（与 Lenovo Legion Toolkit 同款 WMI 调用，拯救者 EC，需管理员权限） ----------
+//
+// 探测顺序同 LLT（V3 → V2/V1，本机 2023 拯救者命中 V3）：
+// - V3（2022+ 机型）：root/WMI LENOVO_OTHER_METHOD.GetFeatureValue
+//     IDs=0x04030001 → CPU 风扇 RPM，0x04030002 → GPU 风扇 RPM
+// - V1/V2（老机型兜底）：root/WMI LENOVO_FAN_METHOD.Fan_GetCurrentFanSpeed，FanID：0=CPU、1=GPU
+// 风扇上限取自 LENOVO_FAN_TABLE_DATA（V3: Sensor 4/Fan 1=CPU、5/Fan 2=GPU），供前端进度条标尺。
 
 let lenovoProc = null
-let lenovoFans = { fanCpu: null, fanGpu: null }
+let lenovoFans = { fanCpu: null, fanGpu: null, maxFanCpu: null, maxFanGpu: null }
 
 const LENOVO_PS = `
+$ErrorActionPreference = 'SilentlyContinue'
+$maxCpu = $null
+$maxGpu = $null
 while ($true) {
+  $cpu = $null
+  $gpu = $null
+  # V3：GetFeatureValue（LLT CapabilityID.CpuCurrentFanSpeed / GpuCurrentFanSpeed）
   try {
-    $gz = Get-WmiObject -Namespace root/WMI -Class LENOVO_GAMEZONE_DATA
-    $f1 = [int]$gz.GetFan1Speed(0)
-    $f2 = [int]$gz.GetFan2Speed(0)
-    [PSCustomObject]@{ fan1 = $f1; fan2 = $f2 } | ConvertTo-Json -Compress
-  } catch { '{"fan1": 0, "fan2": 0}' }
+    $o = Get-CimInstance -Namespace root/WMI -ClassName LENOVO_OTHER_METHOD -ErrorAction Stop | Select-Object -First 1
+    $r = $o | Invoke-CimMethod -MethodName GetFeatureValue -Arguments @{ IDs = [uint32]0x04030001 } -ErrorAction Stop
+    if ([int]$r.Value -ge 0) { $cpu = [int]$r.Value }
+    $r = $o | Invoke-CimMethod -MethodName GetFeatureValue -Arguments @{ IDs = [uint32]0x04030002 } -ErrorAction Stop
+    if ([int]$r.Value -ge 0) { $gpu = [int]$r.Value }
+  } catch {}
+  # V1/V2 兜底：Fan_GetCurrentFanSpeed
+  if ($null -eq $cpu -and $null -eq $gpu) {
+    try {
+      $f = Get-CimInstance -Namespace root/WMI -ClassName LENOVO_FAN_METHOD -ErrorAction Stop | Select-Object -First 1
+      try { $cpu = [int]($f | Invoke-CimMethod -MethodName Fan_GetCurrentFanSpeed -Arguments @{ FanID = [uint32]0 } -ErrorAction Stop).CurrentFanSpeed } catch {}
+      try { $gpu = [int]($f | Invoke-CimMethod -MethodName Fan_GetCurrentFanSpeed -Arguments @{ FanID = [uint32]1 } -ErrorAction Stop).CurrentFanSpeed } catch {}
+    } catch {}
+  }
+  # 风扇上限（常量，查到即缓存）
+  if ($null -eq $maxCpu -or $null -eq $maxGpu) {
+    try {
+      $t = Get-CimInstance -Namespace root/WMI -ClassName LENOVO_FAN_TABLE_DATA -ErrorAction Stop
+      if ($null -eq $maxCpu) {
+        $m = ($t | Where-Object { $_.Sensor_ID -eq 4 -and $_.Fan_Id -eq 1 } | Select-Object -First 1).CurrentFanMaxSpeed
+        if ($m) { $maxCpu = [int]$m }
+      }
+      if ($null -eq $maxGpu) {
+        $m = ($t | Where-Object { $_.Sensor_ID -eq 5 -and $_.Fan_Id -eq 2 } | Select-Object -First 1).CurrentFanMaxSpeed
+        if ($m) { $maxGpu = [int]$m }
+      }
+    } catch {}
+  }
+  if ($null -ne $cpu -or $null -ne $gpu) {
+    [PSCustomObject]@{ fanCpu = $cpu; fanGpu = $gpu; maxFanCpu = $maxCpu; maxFanGpu = $maxGpu } | ConvertTo-Json -Compress
+  } else {
+    '{"fanCpu": null, "fanGpu": null, "maxFanCpu": null, "maxFanGpu": null}'
+  }
   Start-Sleep -Milliseconds 1000
 }
 `
@@ -282,8 +323,13 @@ function startLenovo() {
         if (!line.startsWith('{')) continue
         try {
           const j = JSON.parse(line)
-          // 拯救者双风扇：CPU 扇 + GPU 扇；转速 0 视为停转（保留数值，前端照实显示）
-          lenovoFans = { fanCpu: j.fan1 || 0, fanGpu: j.fan2 || 0 }
+          // 转速 0 是合法值（风扇停转照实显示）；只覆盖拿到的字段
+          lenovoFans = {
+            fanCpu: j.fanCpu ?? lenovoFans.fanCpu,
+            fanGpu: j.fanGpu ?? lenovoFans.fanGpu,
+            maxFanCpu: j.maxFanCpu ?? lenovoFans.maxFanCpu,
+            maxFanGpu: j.maxFanGpu ?? lenovoFans.maxFanGpu,
+          }
         } catch {}
       }
     })
@@ -331,7 +377,8 @@ async function init() {
     } catch {}
   }
 
-  // 风扇/CPU 温度兜底：LHM 流（未装 LHM 时只有 null 行，开销≈0）
+  // LHM 数据流无条件启动：LHM 可能稍后才被拉起（UAC 确认延迟），
+  // 流式轮询在 LHM 缺席时只输出 null 行，等它出现数据自动接上
   startLhm()
 
   // 联想拯救者风扇守护（非拯救者机器输出 0，无害）
@@ -406,15 +453,15 @@ async function getStats() {
     cpuFreqGHz = Math.round(speed.avg * 100) / 100
   }
 
-  // CPU 温度：si 优先，无效时用 LHM 流
+  // CPU 温度：si 优先，无效时用 LHM 流（流常驻，LHM 何时上线都能接上）
   let cpuTemp = temp && temp.main > 0 ? Math.round(temp.main) : null
   if (cpuTemp == null && lhmLatest.cpuTemp != null) cpuTemp = lhmLatest.cpuTemp
 
-  // 风扇：联想 GameZone 优先（拯救者 EC），LHM 兜底
+  // 风扇：联想 WMI 优先（LLT 同款，拯救者 EC 实时转速），LHM 兜底（部分台式机/其他品牌）
   let fanCpu = lhmLatest.fanCpu
   let fanGpu = lhmLatest.fanGpu
-  if (lenovoFans.fanCpu > 0) fanCpu = lenovoFans.fanCpu
-  if (lenovoFans.fanGpu > 0) fanGpu = lenovoFans.fanGpu
+  if (lenovoFans.fanCpu != null) fanCpu = lenovoFans.fanCpu
+  if (lenovoFans.fanGpu != null) fanGpu = lenovoFans.fanGpu
 
   // 按物理盘分组：卷容量合计 + 忙碌% + 温度
   const letterUsage = {}
@@ -455,6 +502,7 @@ async function getStats() {
       memClock: nvidiaLatest ? nvidiaLatest.memClock : null,
       coreClock: nvidiaLatest ? nvidiaLatest.coreClock : null,
       fan: fanGpu,
+      maxFan: lenovoFans.maxFanGpu,
       vramStatic: gpuStatic?.vram ?? null,
     }
   }
@@ -465,6 +513,7 @@ async function getStats() {
     cpuBaseGHz: cpuBaseMHz ? Math.round((cpuBaseMHz / 100) * 100) / 1000 : null,
     cpuTemp,
     fanCpu,
+    maxFanCpu: lenovoFans.maxFanCpu,
     memUsed: r1(mem.used / GB),
     memTotal: r1(mem.total / GB),
     disks,
@@ -481,6 +530,7 @@ function shutdown() {
     nvidiaProc.kill()
     nvidiaProc = null
   }
+  stopLenovo()
   perf.stop()
 }
 
