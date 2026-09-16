@@ -16,8 +16,20 @@ dist-ssr
 .playwright-mcp/
 
 # 本地检查截图与下载存档(不入库)
-kairos-*.png
+# 仅限仓库根目录的截图；src/assets 下的同名资源属于项目资源，必须入库
+/kairos-*.png
 lhm.zip
+
+# 本地调试脚本与诊断输出(不入库)
+/*.ps1
+/fan-diag*.json
+/fan-final.json
+/repro-task.cjs
+/task-diag*.txt
+/uac-debug.txt
+/task-reg-debug.txt
+/whoami-elev.txt
+/liquid-glass-demo.html
 
 # Editor directories and files
 .vscode/*
