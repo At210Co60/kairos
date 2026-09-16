@@ -31,6 +31,11 @@ lhm.zip
 /whoami-elev.txt
 /liquid-glass-demo.html
 
+# LibreHardwareMonitor 的运行时状态：整个文件都是逐传感器的 plot 开关与采样历史
+# (含本机网卡 GUID、电池数据)以及 authenticationPassword 哈希，每次运行都会被 LHM
+# 重写，属于机器本地状态，不入库。缺失时 LHM 首次运行会自动生成默认配置。
+electron/vendor/LibreHardwareMonitor/LibreHardwareMonitor.config
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
