@@ -3,11 +3,11 @@
 > 一个常驻 Windows 桌面的悬浮助手。天气、音乐、硬件监控、剪贴板、番茄钟、翻译以卡片网格排布，
 > 点开任意卡片即以 GSAP FLIP 动画全屏展开；界面背景由一层**自研 WebGL 着色器做真实折射**的液态玻璃绘制。
 
-[![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?style=flat-square&logo=windows11&logoColor=white)](#)
-[![Electron](https://img.shields.io/badge/Electron-44-47848F?style=flat-square&logo=electron&logoColor=white)](#)
-[![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)](#)
-[![TypeScript](https://img.shields.io/badge/TypeScript-6-3178C6?style=flat-square&logo=typescript&logoColor=white)](#)
-[![Vite](https://img.shields.io/badge/Vite-8-646CFF?style=flat-square&logo=vite&logoColor=white)](#)
+![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?style=flat-square&logo=windows11&logoColor=white)
+![Electron](https://img.shields.io/badge/Electron-44-47848F?style=flat-square&logo=electron&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)
+![TypeScript](https://img.shields.io/badge/TypeScript-6-3178C6?style=flat-square&logo=typescript&logoColor=white)
+![Vite](https://img.shields.io/badge/Vite-8-646CFF?style=flat-square&logo=vite&logoColor=white)
 
 Kairos 分成两部分：React 前端负责全部界面与动画，Electron 主进程负责窗口、权限以及硬件与网络
 数据采集。前端通过 `src/lib/tauri.ts` 这层薄桥与后端通信，桥的方法签名与原生 Tauri 保持一致，
