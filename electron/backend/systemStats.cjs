@@ -7,8 +7,9 @@
 // - 风扇：联想拯救者走 Lenovo WMI（LENOVO_OTHER_METHOD/LENOVO_FAN_METHOD，与
 //   Lenovo Legion Toolkit 同款，需管理员权限）；其他机器 LHM WMI 兜底（si 不支持风扇）
 // - GPU：nvidia-smi 常驻进程 1s 刷新（利用率/温度/显存占用/显存频率/核心频率，NVIDIA）
-// - 磁盘：按物理盘分组（Win32 分区关联映射），每组 = 卷容量合计 + 忙碌%
-//   （PerfDisk 计数器）+ 温度（Get-StorageReliabilityCounter，需管理员权限，失败返回 null）
+// - 磁盘：按物理盘分组（Win32 分区关联映射），父级 = 容量合计 + 忙碌%
+//   （PerfDisk 计数器）+ 温度（Get-StorageReliabilityCounter，需管理员权限，失败返回 null），
+//   子级 volumes = 该盘下各分区卷的用量（前端渲染成 磁盘 → 分区 树）
 // - 性能数据源：perf.cjs 常驻 PowerShell 守护，每 ~1s 输出一行 JSON
 
 const si = require('systeminformation')
@@ -23,6 +24,8 @@ let inited = false
 let initPromise = null
 let gpuStatic = null // { name, vram }
 let cpuBaseMHz = null // 基础频率（睿频换算的分母）
+let cpuName = null // CPU 型号（面板分组标题用）
+let memInfo = null // 内存规格摘要（面板分组标题用）
 let cpuClockTick = 0
 let cpuClockFallback = null // WMI CurrentClockSpeed（MHz）
 let diskGroups = [] // [{ index, model, letters: ['C','D'], sizeGB }]
@@ -357,6 +360,28 @@ async function init() {
     if (base) cpuBaseMHz = base
   } catch {}
 
+  // CPU 型号 / 内存规格（面板分组标题）
+  try {
+    const c = await si.cpu()
+    if (c && c.brand) {
+      const brand = c.brand.replace(/\s+/g, ' ').trim()
+      const vendor = (c.manufacturer || '').trim()
+      cpuName = vendor && !brand.toLowerCase().startsWith(vendor.toLowerCase()) ? `${vendor} ${brand}` : brand
+    }
+  } catch {}
+  try {
+    const dimms = (await si.memLayout()).filter((d) => d.size > 0)
+    if (dimms.length) {
+      const d0 = dimms[0]
+      const type = d0.type && d0.type !== 'Unknown' ? d0.type : ''
+      const parts = []
+      if (type) parts.push(d0.clockSpeed ? `${type}-${d0.clockSpeed}` : type)
+      else if (d0.clockSpeed) parts.push(`${d0.clockSpeed} MHz`)
+      parts.push(`${dimms.length}×${Math.round(d0.size / GB)}GB`)
+      memInfo = parts.join(' · ')
+    }
+  } catch {}
+
   // GPU 型号（WMI 名称优先，过滤虚拟适配器；si.graphics 补显存容量）
   try {
     const names = await queryGpuNames()
@@ -463,7 +488,7 @@ async function getStats() {
   if (lenovoFans.fanCpu != null) fanCpu = lenovoFans.fanCpu
   if (lenovoFans.fanGpu != null) fanGpu = lenovoFans.fanGpu
 
-  // 按物理盘分组：卷容量合计 + 忙碌% + 温度
+  // 按物理盘分组：父级 = 容量合计/忙碌%/温度，子级 volumes = 各分区卷的用量
   const letterUsage = {}
   for (const f of fsSize) {
     const m = f.mount.match(/^([A-Za-z]):/)
@@ -472,11 +497,17 @@ async function getStats() {
   const disks = diskGroups.map((g) => {
     let used = 0
     let total = 0
+    const volumes = []
     for (const letterWithColon of g.letters) {
       const u = letterUsage[letterWithColon.replace(':', '').toUpperCase()]
       if (u) {
         used += u.used
         total += u.total
+        volumes.push({
+          letter: letterWithColon.replace(':', ''),
+          usedGB: r1(u.used / GB),
+          totalGB: r1(u.total / GB),
+        })
       }
     }
     const busyKey = Object.keys(snapshot.diskBusy).find((k) => k.startsWith(g.index + ' '))
@@ -486,6 +517,7 @@ async function getStats() {
       sizeGB: g.sizeGB,
       usedGB: r1(used / GB),
       totalGB: r1(total / GB),
+      volumes,
       busyPct: busyKey != null ? Math.min(100, snapshot.diskBusy[busyKey]) : null,
       temp: diskTempProbed ? (diskTemps[String(g.index)] ?? null) : null,
     }
@@ -509,6 +541,8 @@ async function getStats() {
 
   return {
     cpu: r1(load.currentLoad),
+    cpuName,
+    memInfo,
     cpuFreqGHz,
     cpuBaseGHz: cpuBaseMHz ? Math.round((cpuBaseMHz / 100) * 100) / 1000 : null,
     cpuTemp,
