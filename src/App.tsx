@@ -7,6 +7,7 @@ import { getCurrentWindow } from './lib/tauri'
 import MusicPanel from './MusicPanel'
 import ClipboardPanel from './modules/ClipboardPanel'
 import PomodoroPanel from './modules/PomodoroPanel'
+import { startDesktopGlass } from './lib/desktopGlass'
 import WeatherPanel from './modules/WeatherPanel'
 import TranslatePanel from './modules/TranslatePanel'
 import SystemPanel from './modules/SystemPanel'
@@ -123,6 +124,8 @@ function ModuleCard({
       }`}
       onClick={handleClick}
     >
+      {/* 液态玻璃边缘：1px 渐变描边（顶部镜面高光 → 底部冷/暖色散） */}
+      <i className="lg-rim" aria-hidden />
       <header className="module-head">
         {isExpanded && (
           <button className="module-back" onClick={handleClose}>
@@ -142,6 +145,7 @@ function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [pomoSettings, setPomoSettings] = useState(false)
   const { meta, progress, lyrics, lyricsState } = useNowPlaying()
 
   useEffect(() => {
@@ -152,6 +156,43 @@ function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [expanded])
+
+  // 液态玻璃：抓"窗口背后的桌面"喂给 WebGL 折射层（见 lib/desktopGlass.ts）。
+  // 拿不到桌面流时静默失败，界面自动退回原本的 CSS 玻璃。
+  // 说明：Chromium 的 getDisplayMedia 要求用户手势，所以首次失败后会在第一次交互时重试。
+  useEffect(() => {
+    let handle: { dispose: () => void } | null = null
+    let cancelled = false
+    let retryArmed = false
+
+    const boot = (attempt: number) => {
+      startDesktopGlass()
+        .then((h) => {
+          if (cancelled) h.dispose()
+          else handle = h
+        })
+        .catch((err) => {
+          const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+          console.error(`[glass] 桌面折射不可用（第 ${attempt} 次），退回 CSS 玻璃：${detail}`)
+          if (attempt === 1 && !retryArmed) {
+            retryArmed = true
+            const retry = () => {
+              window.removeEventListener('pointerdown', retry)
+              window.removeEventListener('keydown', retry)
+              boot(2)
+            }
+            window.addEventListener('pointerdown', retry, { once: true })
+            window.addEventListener('keydown', retry, { once: true })
+          }
+        })
+    }
+    boot(1)
+
+    return () => {
+      cancelled = true
+      handle?.dispose()
+    }
+  }, [])
 
   // GSAP 悬停动效：事件委托统一接管，动态挂载的面板内容无需单独绑定。
   // 模块卡 = 聚光灯跟随 + 3° 视差倾斜 + 上浮；小卡片 = 上浮；按钮 = 放大。
@@ -287,9 +328,17 @@ function App() {
           expanded={expanded}
           onExpand={setExpanded}
           onCollapse={collapse}
-          headExtra={<span className="module-more">⚙</span>}
+          headExtra={
+            <button
+              className={`module-more pomo-gear${pomoSettings ? ' on' : ''}`}
+              title="番茄钟设置"
+              onClick={() => setPomoSettings((v) => !v)}
+            >
+              ⚙
+            </button>
+          }
         >
-          <PomodoroPanel />
+          <PomodoroPanel settingsOpen={pomoSettings} onCloseSettings={() => setPomoSettings(false)} />
         </ModuleCard>
 
         <ModuleCard

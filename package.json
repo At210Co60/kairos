@@ -15,7 +15,6 @@
     "@gsap/react": "^2.1.2",
     "@meteocons/svg": "^0.1.0",
     "gsap": "^3.15.0",
-    "liquid-glass-react": "^1.1.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "systeminformation": "^5.33.8"

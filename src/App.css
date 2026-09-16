@@ -31,23 +31,26 @@ textarea {
 }
 
 /* ===== 悬浮窗容器（窗口透明，容器负责圆角与底色） ===== */
-/* 静态彩色渐变底：紫 / 蓝 / 青三团颜色，无任何动画效果 */
+/* 静态背景：Unsplash 液态玻璃质感照片（半透明玻璃波浪）+ 压暗渐变保证白字可读 */
 .kairos-root {
   position: relative;
   height: 100%;
   display: flex;
   flex-direction: column;
   overflow: clip;
-  border-radius: 8px;
-  background:
-    radial-gradient(560px 560px at 20% 10%, rgba(124, 58, 237, 0.72), transparent 88%),
-    radial-gradient(520px 520px at 88% 92%, rgba(37, 99, 235, 0.78), transparent 88%),
-    radial-gradient(380px 380px at 55% 58%, rgba(6, 182, 212, 0.45), transparent 88%),
-    rgba(12, 12, 22, 0.92);
+  /* 背景交给 Windows 系统亚克力（DWM 真实模糊桌面）。压暗量按"最坏情况"给：
+     亚克力会把窗口背后的真实内容透过来（可能是一整片纯白网页），薄纱太浅白字就读不清。
+     Win11 的 DWM 自带窗口圆角，这里不再重复画圆角 */
+  background: linear-gradient(
+    180deg,
+    rgba(8, 10, 22, 0.58) 0%,
+    rgba(8, 10, 22, 0.34) 42%,
+    rgba(10, 14, 30, 0.5) 100%
+  );
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-/* 液态玻璃：静态彩色背景 + 卡片半透明模糊（纯 CSS，零动画零循环） */
+/* 液态玻璃：照片背景 + 卡片半透明模糊（纯 CSS，零动画零循环） */
 
 /* ===== 标题栏（拖动区 + 窗口控制） ===== */
 .kairos-titlebar {
@@ -125,21 +128,25 @@ textarea {
   min-height: 0;
   min-width: 0;
   border-radius: 16px;
+  /* 液态玻璃表面：半透明冷白渐变 + Apple 三件套（顶部镜面高光 / 左右边缘色散 / 底部厚度） */
   background: linear-gradient(
     135deg,
-    rgba(255, 255, 255, 0.09) 0%,
+    rgba(255, 255, 255, 0.115) 0%,
     rgba(255, 255, 255, 0.03) 45%,
-    rgba(255, 255, 255, 0.06) 100%
+    rgba(255, 255, 255, 0.08) 100%
   );
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.16);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.24),
-    inset 1px 0 0 rgba(255, 255, 255, 0.09),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.05),
-    0 18px 44px rgba(0, 0, 0, 0.38);
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    inset 0 16px 26px -22px rgba(255, 255, 255, 0.3),
+    inset 1px 0 0 rgba(140, 190, 255, 0.22),
+    inset -1px 0 0 rgba(255, 150, 215, 0.18),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -22px 34px -28px rgba(0, 0, 0, 0.6),
+    0 18px 44px rgba(0, 0, 0, 0.42);
   overflow: clip;
   transition: border-color 0.15s;
-  backdrop-filter: blur(14px) saturate(150%);
+  backdrop-filter: blur(20px) saturate(185%);
 }
 
 /* GSAP 悬停聚光灯：--mx/--my 由指针驱动（App.tsx 委托） */
@@ -163,8 +170,66 @@ textarea {
   opacity: 1;
 }
 
+/* 液态玻璃边缘：用 mask 把渐变裁成 1px 描边——顶部亮、侧向渐隐、底部带冷暖偏色，
+   这是 Apple 液态玻璃最标志性的一笔（border-image 不支持圆角，所以走 mask 方案） */
+.lg-rim {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 2;
+  padding: 1px;
+  background: linear-gradient(
+    158deg,
+    rgba(255, 255, 255, 0.6) 0%,
+    rgba(255, 255, 255, 0.12) 30%,
+    rgba(255, 255, 255, 0.02) 55%,
+    rgba(255, 150, 215, 0.22) 84%,
+    rgba(140, 190, 255, 0.34) 100%
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+
 /* FLIP 收起过程中：聚光灯让位 */
 .module-card.card-flipping::before {
+  opacity: 0 !important;
+}
+
+/* 液态高光扫过：悬停时一道镜面掠光从左上滑过（纯 transform，无重绘开销） */
+.module-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0;
+  background: linear-gradient(
+    115deg,
+    transparent 34%,
+    rgba(255, 255, 255, 0.16) 47%,
+    rgba(255, 255, 255, 0.04) 53%,
+    transparent 64%
+  );
+  transform: translateX(-32%);
+  transition:
+    opacity 0.4s,
+    transform 1s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.module-card:not(.card-expanded):hover::after {
+  opacity: 1;
+  transform: translateX(32%);
+}
+
+.module-card.card-flipping::after {
   opacity: 0 !important;
 }
 
@@ -205,10 +270,19 @@ textarea {
   font-size: 11px;
   color: rgba(255, 255, 255, 0.4);
   cursor: pointer;
+  background: none;
+  border: 0;
+  padding: 0;
+  font-family: inherit;
 }
 
 .module-more:hover {
   color: #fff;
+}
+
+/* 番茄钟设置开关：打开时高亮 */
+.pomo-gear.on {
+  color: #c4b5fd;
 }
 
 .module-playing {
@@ -908,11 +982,29 @@ textarea {
 
 /* ===== 番茄钟模块 ===== */
 .pomodoro {
-  align-items: center;
+  align-items: stretch;
   justify-content: flex-start;
   position: relative;
-  overflow: visible;
+  overflow: hidden;
+  padding: 0;
+}
+
+/* 滚动区：圆环用绝对定位挂在这里，随内容一起滚动 */
+.pomo-scroll {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding-top: 2px;
+  scrollbar-width: none;
+}
+
+.pomo-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .pomo-ring {
@@ -999,13 +1091,375 @@ textarea {
   transform: scale(1.08);
 }
 
-.pomo-done {
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.5);
+.pomo-reset:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
-.pomo-done b {
-  color: #60a5fa;
+.pomo-reset:disabled:hover {
+  transform: none;
+}
+
+/* ---- 番茄钟记录列表（每轮一条：时长 · 暂停次数 · 用途/中断原因） ---- */
+.pomo-log {
+  width: 100%;
+  max-width: 460px;
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 2px;
+}
+
+.pomo-log-item {
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 6px 9px;
+  text-align: left;
+}
+
+.pomo-log-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 9.5px;
+}
+
+.pomo-log-kind {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border-radius: 5px;
+  font-size: 9px;
+}
+
+.pomo-log-kind.done {
+  background: rgba(74, 222, 128, 0.22);
+  color: #86efac;
+}
+
+.pomo-log-kind.aborted {
+  background: rgba(248, 113, 113, 0.2);
+  color: #fca5a5;
+}
+
+.pomo-log-meta {
+  color: rgba(255, 255, 255, 0.6);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.pomo-log-time {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.35);
+  font-variant-numeric: tabular-nums;
+}
+
+.pomo-log-text {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.85);
+  word-break: break-word;
+}
+
+/* ---- 设置 / 原因弹层（覆盖整个面板） ---- */
+.pomo-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  background: rgba(10, 12, 22, 0.86);
+  backdrop-filter: blur(8px);
+}
+
+/* 展开态面板很宽：弹层内容单独限宽居中，不做整行拉伸 */
+.pomo-overlay > * {
+  width: 100%;
+  max-width: 460px;
+}
+
+.pomo-overlay.center {
+  justify-content: center;
+}
+
+.pomo-overlay-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  text-align: left;
+}
+
+.pomo-overlay-hint {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.42);
+  text-align: left;
+}
+
+.pomo-input {
+  width: 100%;
+  min-height: 60px;
+  resize: none;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font-family: inherit;
+  font-size: 11.5px;
+  line-height: 1.5;
+  padding: 7px 9px;
+}
+
+.pomo-input::placeholder {
+  color: rgba(255, 255, 255, 0.28);
+}
+
+.pomo-input:focus {
+  outline: none;
+  border-color: rgba(139, 92, 246, 0.7);
+}
+
+.pomo-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.pomo-btn {
+  padding: 5px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.pomo-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.pomo-btn.primary {
+  background: linear-gradient(135deg, #8b5cf6, #3b82f6);
+  border-color: transparent;
+  color: #fff;
+}
+
+.pomo-btn.primary:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.pomo-btn.primary:disabled:hover {
+  background: linear-gradient(135deg, #8b5cf6, #3b82f6);
+}
+
+/* 整宽主按钮（设置页底部） */
+.pomo-btn.block {
+  width: 100%;
+  padding: 8px 0;
+  border-radius: 11px;
+  font-size: 12px;
+  box-shadow: 0 6px 18px rgba(99, 102, 241, 0.35);
+}
+
+/* ---- 设置页（标题栏 + 大号步进器 + 滑块 + 预设） ---- */
+.pomo-overlay.set {
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 12px 16px 14px;
+}
+
+.pomo-set-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 460px;
+}
+
+.pomo-set-heading {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.pomo-set-x {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.pomo-set-x:hover {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+.pomo-set-caption {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.38);
+  text-align: left;
+  width: 100%;
+  max-width: 460px;
+  margin-top: 2px;
+}
+
+/* 大号时长步进器：− [ 25 ] 分钟 ＋ */
+.pomo-set-stepper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  width: 100%;
+  max-width: 460px;
+  margin: 2px 0;
+}
+
+.pomo-step {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.pomo-step:hover {
+  background: rgba(139, 92, 246, 0.28);
+  border-color: rgba(139, 92, 246, 0.5);
+  transform: scale(1.06);
+}
+
+.pomo-set-value {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.pomo-set-input {
+  width: 78px;
+  padding: 0 0 2px;
+  text-align: center;
+  font-family: inherit;
+  font-size: 32px;
+  font-weight: 700;
+  color: #fff;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  font-variant-numeric: tabular-nums;
+  appearance: textfield;
+}
+
+.pomo-set-input:focus {
+  outline: none;
+  border-bottom-color: rgba(139, 92, 246, 0.85);
+}
+
+.pomo-set-input::-webkit-outer-spin-button,
+.pomo-set-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.pomo-set-unit {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* 滑块：已选段用主渐变，滑块头带发光 */
+.pomo-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  max-width: 460px;
+  height: 4px;
+  border-radius: 999px;
+  margin: 6px 0 2px;
+  cursor: pointer;
+  background: linear-gradient(
+    90deg,
+    #6366f1 0%,
+    #3b82f6 var(--fill, 0%),
+    rgba(255, 255, 255, 0.13) var(--fill, 0%)
+  );
+}
+
+.pomo-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: 50%;
+  background: #fff;
+  cursor: pointer;
+  box-shadow:
+    0 0 0 3px rgba(139, 92, 246, 0.35),
+    0 2px 6px rgba(0, 0, 0, 0.45);
+}
+
+.pomo-set-presets {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  max-width: 460px;
+}
+
+.pomo-chip {
+  flex: 1;
+  padding: 6px 0;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.045);
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.pomo-chip:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.pomo-chip.on {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.55), rgba(59, 130, 246, 0.5));
+  border-color: rgba(167, 139, 250, 0.7);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);
+}
+
+.pomo-set-hint {
+  width: 100%;
+  max-width: 460px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.4);
+  text-align: left;
 }
 
 /* ===== 天气模块 ===== */
@@ -1191,77 +1645,170 @@ textarea {
   color: #fff;
 }
 
-/* ===== 系统监控模块 ===== */
-.sysmon-head {
+/* ===== 系统监控：玻璃水位箱 + 仪表盘 ===== */
+
+/* 指标瓦片网格（瓶/表 + 数值 + 名称） */
+.sysmon-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(74px, 1fr));
+  gap: 8px;
+}
+
+.sysmon-tile {
   display: flex;
-  justify-content: space-between;
+  flex-direction: column;
   align-items: center;
+  gap: 2px;
+  padding: 5px 4px 4px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
-.sysmon-head p {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.sysmon-refresh {
-  font-size: 13px;
-}
-
-.sysmon-row,
-.sysmon-net {
-  padding: 4px 2px;
-}
-
-.sysmon-label-row {
+.sysmon-tile-art {
+  height: 42px;
   display: flex;
-  justify-content: space-between;
-  font-size: 11.5px;
-  color: rgba(255, 255, 255, 0.75);
-  margin-bottom: 5px;
+  align-items: flex-end;
+  justify-content: center;
 }
 
-.sysmon-value {
+.sysmon-tile-value {
+  font-size: 10.5px;
+  font-weight: 600;
   color: #fff;
-  font-weight: 600;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.sysmon-value small {
-  font-size: 9.5px;
-  color: rgba(255, 255, 255, 0.4);
-  font-weight: 400;
-  margin-left: 5px;
-}
-
-/* 每个传感器一组的容器（标签行 + 进度条） */
-.sysmon-metric {
-  margin-bottom: 7px;
-}
-
-/* 条形图下方的传感器小字行（温度/风扇/频率等） */
-.sysmon-sub {
-  display: flex;
-  justify-content: space-between;
+.sysmon-tile-label {
   font-size: 9.5px;
   color: rgba(255, 255, 255, 0.45);
-  margin: -3px 0 3px;
-}
-
-.sysmon-bar {
-  height: 5px;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.08);
+  max-width: 100%;
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.sysmon-bar-fill {
-  height: 100%;
-  border-radius: 4px;
-  transition: width 0.6s;
+/* ---- 玻璃水箱 ---- */
+.tank-body {
+  fill: rgba(255, 255, 255, 0.065);
+  stroke: rgba(255, 255, 255, 0.36);
+  stroke-width: 1.4;
 }
 
-.sysmon-net {
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
-  margin-top: 4px;
+/* 水面：两层视差滚动（平移量与各自波长一致才能无缝循环） + 整体轻微起伏 */
+.wave {
+  will-change: transform;
+}
+
+.wave-back {
+  animation: wave-roll-back 4.2s linear infinite;
+}
+
+.wave-front {
+  animation: wave-roll-front 2.6s linear infinite;
+}
+
+.water-lift {
+  animation: water-bob 5.2s ease-in-out infinite;
+}
+
+@keyframes wave-roll-back {
+  to {
+    transform: translateX(-44px);
+  }
+}
+
+@keyframes wave-roll-front {
+  to {
+    transform: translateX(-32px);
+  }
+}
+
+@keyframes water-bob {
+  50% {
+    transform: translateY(1.6px);
+  }
+}
+
+/* ---- 仪表盘 ---- */
+.gauge-track {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.1);
+  stroke-width: 3.4;
+  stroke-linecap: round;
+}
+
+.gauge-arc {
+  fill: none;
+  stroke-width: 3.4;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.6s cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+.gauge-needle {
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  transition: transform 0.6s cubic-bezier(0.33, 1.4, 0.68, 1);
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+}
+
+/* ---- 分组卡片（CPU / 内存 / 磁盘 / 显卡各一张） ---- */
+.sysmon-card {
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  padding: 8px 10px 9px;
+}
+
+.sysmon-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.sysmon-card-title {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.72);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sysmon-card-meta {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.42);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sysmon-card-value {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.sysmon-shelf-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.sysmon-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
 }
 
 /* ===== 音乐模块（卡片内布局） ===== */
@@ -1665,10 +2212,155 @@ textarea {
   z-index: 60;
 }
 
-/* ===== 音乐卡：封面+信息+控制 横排（覆盖） ===== */
+/* ============================================================
+   液态玻璃（WebGL 真折射）接管态
+   body.glass-live 由 lib/desktopGlass.ts 加上；此时：
+   - 桌面 + 每张卡片的玻璃都由着色器逐像素画（含折射/分光/镜面）
+   - 卡片 DOM 让出背景、边框、模糊，只保留内容
+   - 拿不到桌面流时不会加这个 class，界面退回上面的 CSS 玻璃
+   ============================================================ */
+.glass-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  display: block;
+  pointer-events: none;
+}
+
+body.glass-live {
+  /* 玻璃面板色调（供着色器读取）：越透背景与折射越明显，越实文字越好读 */
+  --glass-tint: 13, 18, 33;
+  --glass-tint-alpha: 0.2;
+}
+
+body.glass-live .kairos-root {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  border-color: transparent;
+}
+
+body.glass-live .module-card {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  transition: none;
+}
+
+/* 着色器已经画了棱边与分光，DOM 的描边让位 */
+body.glass-live .lg-rim {
+  display: none;
+}
+
+/* ---- 音乐卡：封面+信息+控制 横排（覆盖） ---- */
 .music-hero {
   display: flex;
   align-items: center;
   gap: 11px;
   flex-shrink: 0;
+}
+
+/* ============================================================
+   液态玻璃统一层
+   Apple 三件套统一铺到所有玻璃表面：顶部镜面高光 / 左右边缘色散 /
+   底部内反射与厚度。只补光影，不改各模块自己的配色与渐变。
+   （内层不再叠加 backdrop-filter，避免玻璃套玻璃的重复采样）
+   ============================================================ */
+
+/* 内层玻璃面：天气小卡 / 系统监控卡片与瓦片 / 翻译框 / 剪贴板项 / 番茄记录 / 音乐列表 */
+.glass-card,
+.wd-card,
+.sysmon-card,
+.sysmon-tile,
+.tr-box,
+.tr-lang-row,
+.music-results,
+.music-hero,
+.pomo-log-item {
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.26),
+    inset 1px 0 0 rgba(140, 190, 255, 0.16),
+    inset -1px 0 0 rgba(255, 150, 215, 0.13),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.06),
+    inset 0 -14px 24px -22px rgba(0, 0, 0, 0.5);
+}
+
+/* 标题栏：顶部镜面 + 底部发丝线，做出"压在玻璃上的一层" */
+.kairos-titlebar {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.015));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.07);
+}
+
+/* 控件：圆形/胶囊玻璃（高光在顶、微投影在底） */
+.win-btn,
+.module-back,
+.tr-btn,
+.tr-select,
+.tr-swap,
+.pomo-btn,
+.pomo-chip,
+.pomo-step,
+.pomo-main,
+.pomo-reset,
+.wd-toggle button {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.06),
+    0 4px 12px rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+/* 主色按钮：保留渐变，只加玻璃高光 */
+.pomo-main,
+.pomo-btn.primary,
+.tr-btn-primary {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    inset 0 -2px 6px -2px rgba(0, 0, 0, 0.35),
+    0 6px 18px rgba(59, 130, 246, 0.4);
+}
+
+/* 输入类：内凹玻璃（顶部落阴影、底部内反射） */
+.tr-source,
+.tr-result,
+.music-search input,
+.weather-city-input,
+.pomo-input,
+.pomo-set-input {
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow:
+    inset 0 2px 6px -2px rgba(0, 0, 0, 0.45),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.tr-source:focus,
+.tr-result:focus,
+.music-search input:focus,
+.pomo-input:focus {
+  box-shadow:
+    inset 0 2px 6px -2px rgba(0, 0, 0, 0.45),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.14),
+    0 0 0 3px rgba(139, 92, 246, 0.22);
+}
+
+/* 列表行：hover 时整行浮起为一片薄玻璃 */
+.clip-item,
+.music-result,
+.wd-dlist-row {
+  border-radius: 10px;
+  transition:
+    background 0.15s,
+    box-shadow 0.15s;
+}
+
+.clip-item:hover,
+.music-result:hover,
+.wd-dlist-row:hover {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.05);
 }
