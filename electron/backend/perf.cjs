@@ -15,7 +15,7 @@ while ($true) {
   } catch {
     '{"cpuPerf": null, "disks": []}'
   }
-  Start-Sleep -Milliseconds 900
+  Start-Sleep -Milliseconds 2000
 }
 `
 
@@ -26,6 +26,14 @@ function start() {
   if (proc) return
   try {
     proc = spawn('powershell.exe', ['-NoProfile', '-Command', PERF_PS], { windowsHide: true })
+    // 脚本语法出错时 PowerShell 只在 stderr 报错就退出，不接住的话表现为"频率永远空着"
+    let errLogged = 0
+    proc.stderr.on('data', (chunk) => {
+      if (errLogged >= 4) return
+      errLogged++
+      const line = String(chunk).trim().split(/\r?\n/)[0]
+      if (line) console.error(`[perf] daemon stderr: ${line}`)
+    })
     let buf = ''
     proc.stdout.on('data', (chunk) => {
       buf += chunk.toString()

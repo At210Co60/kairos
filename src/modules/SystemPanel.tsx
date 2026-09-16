@@ -153,10 +153,10 @@ function Gauge({
   )
 }
 
-/** 指标瓦片：图 + 数值 + 名称 */
-function Tile({ label, text, art }: { label: string; text: string; art: ReactNode }) {
+/** 指标瓦片：图 + 数值 + 名称（hint 为悬停提示，用来说明读不到数据的原因） */
+function Tile({ label, text, art, hint }: { label: string; text: string; art: ReactNode; hint?: string }) {
   return (
-    <div className="sysmon-tile">
+    <div className="sysmon-tile" title={hint}>
       <div className="sysmon-tile-art">{art}</div>
       <span className="sysmon-tile-value">{text}</span>
       <span className="sysmon-tile-label">{label}</span>
@@ -185,6 +185,8 @@ interface Stats {
   cpuTemp: number | null
   fanCpu: number | null
   maxFanCpu: number | null
+  /** 非管理员启动时联想 WMI 读转速被拒（本机 LHM 无 Fan 传感器，无兜底） */
+  fanDenied?: boolean
   memUsed: number
   memTotal: number
   disks: Array<{
@@ -207,6 +209,19 @@ function shortGpuName(name: string | null): string {
   return name.replace(/NVIDIA\s*/i, '').replace(/AMD\s*/i, '').replace(/GeForce\s*/i, '').trim() || name
 }
 
+/**
+ * 转速文案：读不到时要说明原因。本机风扇只能从联想 WMI 取（LHM 不暴露任何 Fan
+ * 传感器，没有兜底），而它需要管理员权限——不提权启动就永远读不到，
+ * 只显示一个「—」会让人误判成"这台机器没有风扇传感器"。
+ */
+function fanText(rpm: number | null, denied: boolean | undefined): string {
+  if (rpm != null) return `${rpm} RPM`
+  return denied ? '需管理员' : '—'
+}
+
+/** 悬停说明：把"怎么才能看到转速"直接写在提示里 */
+const FAN_HINT_DENIED = '联想拯救者风扇转速走 EC WMI 通道，需要管理员权限。请从管理员终端运行 npm run electron:dev，或用 npm start 走提权启动。'
+
 export default function SystemPanel() {
   const [stats, setStats] = useState<Stats | null>(null)
   const [err, setErr] = useState(false)
@@ -215,30 +230,62 @@ export default function SystemPanel() {
 
   useEffect(() => {
     let alive = true
-    const poll = () =>
-      invoke<Stats>('system_stats')
-        .then((s) => {
-          if (!alive || !s) return
+    let timer = 0
+    let lastErr = ''
+    // 背压：上一次采集返回后才排下一次。原先固定 1s 间隔 + 无背压，慢采集会不断堆积，
+    // 而每次采集都要新开 PowerShell 取网络/磁盘数据，堆积就是每秒造一个进程的元凶。
+    const POLL_MS = 2500
+    // 单次请求上限：后端已给采样加了总超时，这里再兜一层——万一 IPC 那头仍卡住，
+    // 至少能放弃这一次并重新发起，而不是让面板永久停在"获取中"（背压去掉堆积的同时
+    // 也去掉了重试，没有这层的话单次卡死就是永久卡死）
+    const REQ_TIMEOUT_MS = 12000
+    const tick = async () => {
+      try {
+        const s = await Promise.race([
+          invoke<Stats>('system_stats'),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`采集超时（后端 ${REQ_TIMEOUT_MS / 1000}s 未返回）`)), REQ_TIMEOUT_MS),
+          ),
+        ])
+        if (alive && s) {
           setStats(s)
           setErr(false)
           setNetPeak((p) => ({
             down: Math.max(p.down, s.netDown),
             up: Math.max(p.up, s.netUp),
           }))
-        })
-        .catch(() => alive && setErr(true))
-    poll()
-    const t = setInterval(poll, 1000)
+        }
+      } catch (e) {
+        if (alive) {
+          setErr(true)
+          const msg = e instanceof Error ? e.message : String(e)
+          if (msg !== lastErr) {
+            lastErr = msg
+            console.error('[sysmon] system_stats 失败:', msg)
+          }
+        }
+      } finally {
+        // 必须放在 finally：排下一次轮询若写在 try 之后，任何一次超时/异常提前 return
+        // 都会让整条轮询链永久断掉，面板就冻在某一帧不完整的快照上。
+        // 停止轮询只由卸载时的 clearTimeout 负责。
+        if (alive) timer = window.setTimeout(tick, POLL_MS)
+      }
+    }
+    tick()
     return () => {
       alive = false
-      clearInterval(t)
+      clearTimeout(timer)
     }
   }, [])
 
-  if (err || !stats) {
+  if (!stats) {
     return (
       <div className="panel-stack">
-        <p className="panel-note">系统数据获取中…（首次采集需要几秒）</p>
+        <p className="panel-note">
+          {err
+            ? '系统数据不可用：后端采集失败（详见控制台 [sysmon]）'
+            : '系统数据获取中…（冷启动要拉起三个传感器守护进程，首次出数约需一两分钟）'}
+        </p>
       </div>
     )
   }
@@ -278,7 +325,8 @@ export default function SystemPanel() {
           />
           <Tile
             label="风扇"
-            text={stats.fanCpu != null ? `${stats.fanCpu} RPM` : '—'}
+            text={fanText(stats.fanCpu, stats.fanDenied)}
+            hint={stats.fanCpu == null && stats.fanDenied ? FAN_HINT_DENIED : undefined}
             art={<Gauge value={stats.fanCpu} min={0} max={stats.maxFanCpu ?? 3500} color={COLOR.fan} />}
           />
         </div>
@@ -351,7 +399,8 @@ export default function SystemPanel() {
             />
             <Tile
               label="风扇"
-              text={gpu.fan != null ? `${gpu.fan} RPM` : '—'}
+              text={fanText(gpu.fan, stats.fanDenied)}
+              hint={gpu.fan == null && stats.fanDenied ? FAN_HINT_DENIED : undefined}
               art={<Gauge value={gpu.fan} min={0} max={gpu.maxFan ?? 3500} color={COLOR.fan} />}
             />
             <Tile

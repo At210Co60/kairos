@@ -2,6 +2,7 @@
 // 职责：透明无边框窗口、IPC 路由（命令名与原 Tauri 命令一一对应，前端零逻辑改动）
 const { app, BrowserWindow, ipcMain, Notification, screen } = require('electron')
 const path = require('node:path')
+const fs = require('node:fs')
 const { spawn, execSync } = require('node:child_process')
 
 const weather = require('./backend/weather.cjs')
@@ -110,6 +111,46 @@ function ensureElevation() {
 }
 
 /**
+ * 让 LHM 启动即隐藏（托盘常驻，不弹窗口）。
+ *
+ * 只能写它自己的设置项：原先传的 `/minimized` 参数 LHM 根本不认——该字符串在
+ * LibreHardwareMonitor.exe 的程序集里一次都没出现，也没有任何"启动隐藏"的命令行开关。
+ * 设置项对应它 Options 菜单里的「Start minimized」「Minimize to tray」「Minimize on close」：
+ *   - 前两项让它启动时直接进托盘，不出现窗口；
+ *   - minCloseMenuItem 让点关闭变成收进托盘而不是退出进程——LHM 一旦退出，下次启动
+ *     Kairos 会重新拉起它，于是又弹一次窗口，这正是"每次启动都要手动关"的来源。
+ *
+ * 必须在拉起「之前」写：运行中的实例持有配置并在退出时整体重写，写早了会被冲掉（实测）。
+ */
+const LHM_HIDDEN_SETTINGS = [
+  ['startMinMenuItem', 'true'],
+  ['minTrayMenuItem', 'true'],
+  ['minCloseMenuItem', 'true'],
+]
+
+function ensureLhmHidden() {
+  const cfg = path.join(__dirname, 'vendor', 'LibreHardwareMonitor', 'LibreHardwareMonitor.config')
+  try {
+    let xml = fs.readFileSync(cfg, 'utf8')
+    let changed = false
+    for (const [key, value] of LHM_HIDDEN_SETTINGS) {
+      const line = `<add key="${key}" value="${value}" />`
+      const existing = new RegExp(`<add\\s+key="${key}"\\s+value="[^"]*"\\s*/>`)
+      if (existing.test(xml)) {
+        if (xml.includes(line)) continue
+        xml = xml.replace(existing, line)
+      } else {
+        xml = xml.replace('<appSettings>', `<appSettings>\n    ${line}`)
+      }
+      changed = true
+    }
+    if (changed) fs.writeFileSync(cfg, xml, 'utf8')
+  } catch (err) {
+    console.error('LHM config patch failed:', err)
+  }
+}
+
+/**
  * 确保捆绑的 LibreHardwareMonitor 在运行（温度/风扇数据源，MIT License）。
  * 已提权 → 直接拉起；未提权（dev 模式）→ RunAs 提权拉起（弹一次 UAC）。
  * WMI 命名空间已有传感器 → 跳过。
@@ -124,16 +165,17 @@ function ensureLhm() {
   } catch {
     // WMI 命名空间不存在 → 未运行
   }
+  ensureLhmHidden()
   const exe = path.join(__dirname, 'vendor', 'LibreHardwareMonitor', 'LibreHardwareMonitor.exe')
   try {
     if (isElevated()) {
-      spawn(exe, ['/minimized'], { cwd: path.dirname(exe), stdio: 'ignore', detached: true }).unref()
+      spawn(exe, [], { cwd: path.dirname(exe), stdio: 'ignore', detached: true }).unref()
       lhmLaunchedByUs = true
     } else {
       // dev 模式：提权拉起（弹一次 UAC）。实例权限高于本进程，退出时不强杀。
       spawn(
         'powershell.exe',
-        ['-NoProfile', '-Command', `Start-Process -FilePath '${exe}' -ArgumentList '/minimized' -Verb RunAs`],
+        ['-NoProfile', '-Command', `Start-Process -FilePath '${exe}' -Verb RunAs`],
         { stdio: 'ignore', windowsHide: true },
       )
     }

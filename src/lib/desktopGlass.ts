@@ -178,10 +178,19 @@ export interface DesktopGlass {
 
 const dpr = () => Math.min(2, window.devicePixelRatio || 1)
 
-/** 启动液态玻璃层（壁纸折射）。失败抛错，调用方据此保留 CSS 玻璃。 */
-export async function startDesktopGlass(): Promise<DesktopGlass> {
+// 单例状态：玻璃层是整个窗口级别的背景资源，不是组件级资源（详见文件末尾的 startDesktopGlass）
+let sharedHandle: DesktopGlass | null = null
+let sharedBoot: Promise<DesktopGlass> | null = null
+
+/** 真正建层（内部实现）。对外只用 startDesktopGlass 的单例入口。 */
+async function bootDesktopGlass(): Promise<DesktopGlass> {
   // 窗口在屏幕上的位置：背景壁纸按"窗口覆盖屏幕的那一块"采样，与桌面严丝合缝
   const geo = await invoke<WinGeometry>('win_geometry')
+
+  // 清掉可能残留的旧画布：dev 下 HMR 换掉本模块时，旧实例的 canvas 不会被回收，
+  // 留着会和新画布叠在一起（两块画布各跑一套 rAF）。
+  document.querySelectorAll('.glass-canvas').forEach((el) => el.remove())
+
   const canvas = document.createElement('canvas')
   canvas.className = 'glass-canvas'
   document.body.insertBefore(canvas, document.body.firstChild)
@@ -200,21 +209,27 @@ export async function startDesktopGlass(): Promise<DesktopGlass> {
     img.onerror = () => reject(new Error('wallpaper load failed'))
   })
 
-  const tex = gl.createTexture()
-  gl.bindTexture(gl.TEXTURE_2D, tex)
-  // 不加 UNPACK_FLIP_Y：让纹理 v=0 对应图片顶部，配合着色器里自上而下的 px 采样
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+  /**
+   * 建 GL 资源。抽成函数是因为 WebGL 上下文一旦丢失，纹理/着色器/缓冲全部失效，
+   * 恢复时必须整套重建（见下面的 contextlost / contextrestored 处理）。
+   */
+  const buildGlResources = () => {
+    const tex = gl.createTexture()
+    gl.bindTexture(gl.TEXTURE_2D, tex)
+    // 不加 UNPACK_FLIP_Y：让纹理 v=0 对应图片顶部，配合着色器里自上而下的 px 采样
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
 
-  const progBg = link(gl, FRAG_BG)
-  const progGlass = link(gl, FRAG_GLASS)
+    const buf = gl.createBuffer()
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf)
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW)
 
-  const buf = gl.createBuffer()
-  gl.bindBuffer(gl.ARRAY_BUFFER, buf)
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW)
+    return { tex, buf, progBg: link(gl, FRAG_BG), progGlass: link(gl, FRAG_GLASS) }
+  }
+  let res = buildGlResources()
 
   // 壁纸 → 屏幕的映射（桌面壁纸按 cover 铺满屏幕），再叠窗口的屏幕偏移：
   //   image_px = (winX + page_px) * inv + centerOffset      （inv = 图片像素 / 屏幕像素）
@@ -230,10 +245,23 @@ export async function startDesktopGlass(): Promise<DesktopGlass> {
 
   // 光源（镜面高光跟着鼠标）
   let light: [number, number] = [window.innerWidth * 0.3, window.innerHeight * 0.15]
+
+  // 活跃窗口：指针/尺寸变动后的这段时间内按 60fps 出帧，之后停帧。
+  // 画面只在"有输入"或"卡片几何在变"时才需要重画，静止时全速重绘纯属烧 CPU。
+  const ACTIVITY_MS = 700
+  let activeUntil = 0
+  const markActive = () => {
+    activeUntil = performance.now() + ACTIVITY_MS
+  }
+
   const onMove = (e: PointerEvent) => {
     light = [e.clientX * dpr(), e.clientY * dpr()]
+    markActive()
   }
   window.addEventListener('pointermove', onMove)
+  // 悬停倾斜/FLIP 展开都由指针触发，补上按下与滚轮让动画期间保持出帧
+  window.addEventListener('pointerdown', markActive)
+  window.addEventListener('wheel', markActive, { passive: true })
 
   const resize = () => {
     const d = dpr()
@@ -246,12 +274,14 @@ export async function startDesktopGlass(): Promise<DesktopGlass> {
   window.addEventListener('resize', () => {
     resize()
     base = cover()
+    markActive()
   })
 
   // 拖动/缩放窗口 → 换背景采样区域，保证与桌面一致
   const offBounds = await listen<WinGeometry['bounds']>('win-bounds', ({ payload }) => {
     if (payload) geo.bounds = payload
     base = cover()
+    markActive()
   })
 
   const measure = (): Panel[] => {
@@ -268,34 +298,52 @@ export async function startDesktopGlass(): Promise<DesktopGlass> {
     return out
   }
 
-  const attrib = (p: WebGLProgram) => {
+  const attrib = (p: WebGLProgram, buffer: WebGLBuffer) => {
     const loc = gl.getAttribLocation(p, 'aPos')
-    gl.bindBuffer(gl.ARRAY_BUFFER, buf)
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
     gl.enableVertexAttribArray(loc)
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0)
   }
 
   let raf = 0
   let disposed = false
+  // 上下文丢失期间不能下发任何 GL 调用；循环照常跑，等恢复后自动接着画
+  let contextLost = false
   const MIN_INTERVAL = 1000 / 60
+  const IDLE_INTERVAL = 1000 / 2 // 空闲心跳 2fps：兜住任何漏掉的变更信号
   let lastDraw = 0
+  let lastIdleDraw = 0
   let frameCount = 0
   let tint = readTint()
 
   const frame = (now: number) => {
     if (disposed) return
     raf = requestAnimationFrame(frame)
-    if (now - lastDraw < MIN_INTERVAL) return
+    if (contextLost) return
+    // 窗口隐藏（最小化/被遮挡）时完全停帧：主进程设了 backgroundThrottling: false，
+    // 这里不主动停的话，WebGL 层会在后台一直全速渲染
+    if (document.hidden) return
+
+    // 活跃期 60fps，静止后降到 2fps 心跳
+    const active = now < activeUntil
+    if (active) {
+      if (now - lastDraw < MIN_INTERVAL) return
+    } else if (now - lastIdleDraw < IDLE_INTERVAL) {
+      return
+    }
     lastDraw = now
+    if (!active) lastIdleDraw = now
     if (frameCount++ % 30 === 0) tint = readTint()
 
+    const { tex, buf, progBg, progGlass } = res
     gl.viewport(0, 0, canvas.width, canvas.height)
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, tex)
 
     gl.disable(gl.BLEND)
+    gl.disable(gl.SCISSOR_TEST)
     gl.useProgram(progBg)
-    attrib(progBg)
+    attrib(progBg, buf)
     gl.uniform1i(gl.getUniformLocation(progBg, 'uTex'), 0)
     gl.uniform2f(gl.getUniformLocation(progBg, 'uRes'), canvas.width, canvas.height)
     gl.uniform2f(gl.getUniformLocation(progBg, 'uImg'), img.naturalWidth, img.naturalHeight)
@@ -309,8 +357,11 @@ export async function startDesktopGlass(): Promise<DesktopGlass> {
 
     gl.enable(gl.BLEND)
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
+    // 每块玻璃只栅格化自己的包围盒（含投影余量）。否则 6 块玻璃各画一次全屏 quad，
+    // 每次都要对整屏像素跑一遍 SDF，等于 6 倍过绘——这是原先 GPU 进程占满一个核的主因。
+    gl.enable(gl.SCISSOR_TEST)
     gl.useProgram(progGlass)
-    attrib(progGlass)
+    attrib(progGlass, buf)
     gl.uniform1i(gl.getUniformLocation(progGlass, 'uTex'), 0)
     gl.uniform2f(gl.getUniformLocation(progGlass, 'uRes'), canvas.width, canvas.height)
     gl.uniform2f(gl.getUniformLocation(progGlass, 'uImg'), img.naturalWidth, img.naturalHeight)
@@ -323,14 +374,55 @@ export async function startDesktopGlass(): Promise<DesktopGlass> {
     gl.uniform2f(gl.getUniformLocation(progGlass, 'uLight'), light[0], light[1])
     gl.uniform3f(gl.getUniformLocation(progGlass, 'uTint'), tint.rgb[0], tint.rgb[1], tint.rgb[2])
     gl.uniform1f(gl.getUniformLocation(progGlass, 'uTintA'), tint.alpha)
+    const PAD = 56 // 对应着色器里投影的 smoothstep(3.0, 52.0)
     for (const p of measure()) {
       gl.uniform4f(gl.getUniformLocation(progGlass, 'uRect'), p.x, p.y, p.w, p.h)
       gl.uniform1f(gl.getUniformLocation(progGlass, 'uRadius'), p.r)
+      const sx = Math.max(0, Math.floor(p.x - PAD))
+      const sy = Math.max(0, Math.floor(canvas.height - (p.y + p.h + PAD)))
+      gl.scissor(
+        sx,
+        sy,
+        Math.min(canvas.width - sx, Math.ceil(p.w + PAD * 2)),
+        Math.min(canvas.height - sy, Math.ceil(p.h + PAD * 2)),
+      )
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
     }
+    gl.disable(gl.SCISSOR_TEST)
   }
 
+  /**
+   * 上下文丢失（GPU 驱动重置、GPU 进程崩溃、切显卡、改分辨率/DPI、插显示器都可能触发）。
+   *
+   * 原先没有任何处理：上下文一丢，画布就是一片空白，而 body 上的 glass-live 还挂着，
+   * CSS 玻璃继续被压着不让位 —— 结果玻璃彻底消失且不会自己回来，只能重启应用。
+   *
+   * 现在：丢失时先摘掉 glass-live 让 CSS 玻璃顶上（宁可观感降级，也不要全黑），
+   * preventDefault 阻止默认的"永久丢失"，等 restored 事件到了再整套重建 GL 资源。
+   */
+  const onContextLost = (e: Event) => {
+    e.preventDefault()
+    contextLost = true
+    document.body.classList.remove('glass-live')
+    console.warn('[glass] WebGL 上下文丢失，暂时退回 CSS 玻璃，等待自动恢复')
+  }
+
+  const onContextRestored = () => {
+    try {
+      res = buildGlResources()
+      contextLost = false
+      document.body.classList.add('glass-live')
+      markActive()
+      console.log('[glass] WebGL 上下文已恢复，折射层重新接管')
+    } catch (err) {
+      console.error('[glass] 上下文恢复失败，继续用 CSS 玻璃：', err)
+    }
+  }
+  canvas.addEventListener('webglcontextlost', onContextLost, false)
+  canvas.addEventListener('webglcontextrestored', onContextRestored, false)
+
   document.body.classList.add('glass-live')
+  markActive()
   raf = requestAnimationFrame(frame)
   console.log(`[glass] 折射层接管：${measure().length} 块玻璃，画布 ${canvas.width}x${canvas.height}`)
 
@@ -340,9 +432,40 @@ export async function startDesktopGlass(): Promise<DesktopGlass> {
       disposed = true
       cancelAnimationFrame(raf)
       window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerdown', markActive)
+      window.removeEventListener('wheel', markActive)
+      canvas.removeEventListener('webglcontextlost', onContextLost)
+      canvas.removeEventListener('webglcontextrestored', onContextRestored)
       offBounds()
       document.body.classList.remove('glass-live')
       canvas.remove()
+      // 单例回到未初始化状态，之后还能重新建层
+      sharedHandle = null
+      sharedBoot = null
     },
   }
+}
+
+/**
+ * 单例入口：重复调用复用同一实例。
+ *
+ * StrictMode 在 dev 下会把 effect 跑两遍（挂载 → 卸载 → 挂载），HMR 每次改动也会重跑，
+ * 而 dispose() 会摘掉全局的 glass-live 类。没有单例时就是两次并发初始化、两块画布两套 rAF，
+ * 谁先完成不确定：先完成的先 dispose 就正好把后建实例还需要的类摘掉，CSS 玻璃与 WebGL
+ * 玻璃同时生效或互相打架——表现就是玻璃"时有时无"。这里把并发与生命周期收敛成一份。
+ */
+export function startDesktopGlass(): Promise<DesktopGlass> {
+  if (sharedHandle) return Promise.resolve(sharedHandle)
+  if (!sharedBoot) {
+    sharedBoot = bootDesktopGlass()
+      .then((h) => {
+        sharedHandle = h
+        return h
+      })
+      .catch((err) => {
+        sharedBoot = null // 失败不缓存，允许调用方稍后重试
+        throw err
+      })
+  }
+  return sharedBoot
 }

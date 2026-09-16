@@ -6,11 +6,15 @@
 // - CPU 温度：si.cpuTemperature（WMI，部分主板无效）→ LibreHardwareMonitor 流兜底 → null
 // - 风扇：联想拯救者走 Lenovo WMI（LENOVO_OTHER_METHOD/LENOVO_FAN_METHOD，与
 //   Lenovo Legion Toolkit 同款，需管理员权限）；其他机器 LHM WMI 兜底（si 不支持风扇）
-// - GPU：nvidia-smi 常驻进程 1s 刷新（利用率/温度/显存占用/显存频率/核心频率，NVIDIA）
+// - GPU：nvidia-smi 常驻进程 2s 刷新（利用率/温度/显存占用/显存频率/核心频率，NVIDIA）
 // - 磁盘：按物理盘分组（Win32 分区关联映射），父级 = 容量合计 + 忙碌%
 //   （PerfDisk 计数器）+ 温度（Get-StorageReliabilityCounter，需管理员权限，失败返回 null），
 //   子级 volumes = 该盘下各分区卷的用量（前端渲染成 磁盘 → 分区 树）
-// - 性能数据源：perf.cjs 常驻 PowerShell 守护，每 ~1s 输出一行 JSON
+// - 性能数据源：perf.cjs 常驻 PowerShell 守护，每 ~2s 输出一行 JSON
+//
+// 采集节奏约定：前端面板每 2.5s 取一次数，各守护进程的轮询间隔不要低于这个量级。
+// WMI 查询（Get-CimInstance）本身开销不小，采集快于消费只是白烧 CPU——曾出现
+// 前端 1s 无背压轮询 + 守护 1s 轮询，导致每秒新开一个 PowerShell 进程。
 
 const si = require('systeminformation')
 const { spawn, execFile } = require('node:child_process')
@@ -41,7 +45,7 @@ let nvidiaGotData = false
 let nvidiaAttempt = 0
 
 const NVIDIA_QUERY =
-  '--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total,clocks.mem,clocks.gr --format=csv,noheader,nounits -l 1'
+  '--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total,clocks.mem,clocks.gr --format=csv,noheader,nounits -l 2'
 
 function startNvidia(attempt = 1) {
   if (nvidiaProc || attempt > 4) return
@@ -91,11 +95,25 @@ function queryArgs() {
     '--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total,clocks.mem,clocks.gr',
     '--format=csv,noheader,nounits',
     '-l',
-    '1',
+    '2',
   ]
 }
 
 // ---------- LibreHardwareMonitor 流（风扇 / CPU 温度兜底，未装则输出 null 行） ----------
+
+/**
+ * 守护进程的 stderr 必须接住：PowerShell 脚本一旦语法出错会立刻退出、只在 stderr 报错，
+ * 不接的话表现是"某个指标永远空着"，从现象完全看不出原因。
+ */
+function pipeDaemonErrors(proc, name) {
+  let logged = 0
+  proc.stderr.on('data', (chunk) => {
+    if (logged >= 4) return
+    logged++
+    const line = String(chunk).trim().split(/\r?\n/)[0]
+    if (line) console.error(`[${name}] daemon stderr: ${line}`)
+  })
+}
 
 let lhmProc = null
 let lhmLatest = { fanCpu: null, fanGpu: null, cpuTemp: null }
@@ -119,7 +137,7 @@ while ($true) {
     }
     [PSCustomObject]@{ fanCpu = $fanCpu; fanGpu = $fanGpu; cpuTemp = $cpuTemp } | ConvertTo-Json -Compress
   } catch { '{"fanCpu": null, "fanGpu": null, "cpuTemp": null}' }
-  Start-Sleep -Milliseconds 1500
+  Start-Sleep -Milliseconds 2500
 }
 `
 
@@ -127,6 +145,7 @@ function startLhm() {
   if (lhmProc) return
   try {
     lhmProc = spawn('powershell.exe', ['-NoProfile', '-Command', LHM_PS], { windowsHide: true })
+    pipeDaemonErrors(lhmProc, 'LHM')
     let buf = ''
     lhmProc.stdout.on('data', (chunk) => {
       buf += chunk.toString()
@@ -265,11 +284,22 @@ try {
 
 let lenovoProc = null
 let lenovoFans = { fanCpu: null, fanGpu: null, maxFanCpu: null, maxFanGpu: null }
+let lenovoDenied = false // 非管理员 → 读转速被拒；面板据此提示而不是干显示 —
 
 const LENOVO_PS = `
 $ErrorActionPreference = 'SilentlyContinue'
 $maxCpu = $null
 $maxGpu = $null
+# 读转速的 WMI 方法调用需要管理员权限，且本机 LHM 不暴露任何 Fan 传感器、没有兜底来源。
+# 启动时探一次权限随每行 JSON 上报，让面板能区分"没权限"和"压根没这个传感器"。
+# 注意用 Get-CimClass（类元数据，非管理员可读）判在不在——Get-CimInstance 取实例
+# 在非管理员下同样会被拒，拿它当探针会把"被拒"误判成"没有这个类"。
+$hasLenovo = $false
+foreach ($cn in @('LENOVO_OTHER_METHOD', 'LENOVO_FAN_METHOD')) {
+  if (Get-CimClass -Namespace root/WMI -ClassName $cn -ErrorAction SilentlyContinue) { $hasLenovo = $true }
+}
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$denied = ($hasLenovo -and -not $isAdmin)
 while ($true) {
   $cpu = $null
   $gpu = $null
@@ -304,11 +334,11 @@ while ($true) {
     } catch {}
   }
   if ($null -ne $cpu -or $null -ne $gpu) {
-    [PSCustomObject]@{ fanCpu = $cpu; fanGpu = $gpu; maxFanCpu = $maxCpu; maxFanGpu = $maxGpu } | ConvertTo-Json -Compress
+    [PSCustomObject]@{ fanCpu = $cpu; fanGpu = $gpu; maxFanCpu = $maxCpu; maxFanGpu = $maxGpu; denied = $denied } | ConvertTo-Json -Compress
   } else {
-    '{"fanCpu": null, "fanGpu": null, "maxFanCpu": null, "maxFanGpu": null}'
+    [PSCustomObject]@{ fanCpu = $null; fanGpu = $null; maxFanCpu = $maxCpu; maxFanGpu = $maxGpu; denied = $denied } | ConvertTo-Json -Compress
   }
-  Start-Sleep -Milliseconds 1000
+  Start-Sleep -Milliseconds 2500
 }
 `
 
@@ -316,6 +346,7 @@ function startLenovo() {
   if (lenovoProc) return
   try {
     lenovoProc = spawn('powershell.exe', ['-NoProfile', '-Command', LENOVO_PS], { windowsHide: true })
+    pipeDaemonErrors(lenovoProc, 'Lenovo')
     let buf = ''
     lenovoProc.stdout.on('data', (chunk) => {
       buf += chunk.toString()
@@ -333,6 +364,7 @@ function startLenovo() {
             maxFanCpu: j.maxFanCpu ?? lenovoFans.maxFanCpu,
             maxFanGpu: j.maxFanGpu ?? lenovoFans.maxFanGpu,
           }
+          lenovoDenied = j.denied === true
         } catch {}
       }
     })
@@ -436,9 +468,39 @@ async function init() {
   } catch {}
 }
 
+/**
+ * init 里有若干没带超时的 systeminformation 调用（cpu/memLayout/graphics），
+ * 一旦有一个卡住，这个共享的 initPromise 就永不settle——所有后续 getStats 全部
+ * 吊死在同一处，面板表现为"永久获取中"。这里给 init 加超时闸门：超时先放行，
+ * 让能拿到的数据先出来（缺的字段为 null），init 继续在后台跑完。
+ */
+const INIT_TIMEOUT_MS = 8000
+
+/** 单次采样总超时：见 getStats 里的说明 */
+const SAMPLE_TIMEOUT_MS = 6000
+
 function ensureInit() {
-  if (!initPromise) initPromise = init()
+  if (!initPromise) {
+    initPromise = Promise.race([init(), new Promise((resolve) => setTimeout(resolve, INIT_TIMEOUT_MS))])
+  }
   return initPromise
+}
+
+/**
+ * 磁盘容量走缓存：si.fsSize() 每次调用都会新开一个 PowerShell 进程去取卷信息，
+ * 而容量几分钟内不会有可见变化——按 TTL 缓存，把每秒/每次轮询的进程创建去掉。
+ */
+const FS_TTL_MS = 20000
+let fsCache = { at: 0, data: [] }
+
+async function getFsSize() {
+  const now = Date.now()
+  if (fsCache.data.length && now - fsCache.at < FS_TTL_MS) return fsCache.data
+  try {
+    const d = await si.fsSize()
+    if (d && d.length) fsCache = { at: now, data: d }
+  } catch {}
+  return fsCache.data
 }
 
 // ---------- 汇总 ----------
@@ -446,23 +508,30 @@ function ensureInit() {
 async function getStats() {
   await ensureInit()
   const snapshot = perf.getPerf()
-  const [load, speed, temp, mem, fsSize, net] = await Promise.all([
-    si.currentLoad(),
-    si.cpuCurrentSpeed(),
-    si.cpuTemperature(),
-    si.mem(),
-    si.fsSize(),
-    si.networkStats(),
+  // si 的这批调用没有超时，冷启动时和三个守护进程抢 WMI/PowerShell 可能长时间不返回；
+  // 卡住一个就把响应拖死，前端会永久停在"获取中"。这里给整批加总超时，
+  // 超时先返回空样本（下一轮轮询补上），保证响应一定到得了前端。
+  const [load, speed, temp, mem, fsSize, net] = await Promise.race([
+    Promise.all([
+      si.currentLoad(),
+      si.cpuCurrentSpeed(),
+      si.cpuTemperature(),
+      si.mem(),
+      getFsSize(),
+      si.networkStats(),
+    ]),
+    new Promise((resolve) => setTimeout(() => resolve([null, null, null, null, null, null]), SAMPLE_TIMEOUT_MS)),
   ])
 
   let rxSec = 0
   let txSec = 0
-  for (const n of net) {
+  for (const n of net || []) {
     rxSec += n.rx_sec || 0
     txSec += n.tx_sec || 0
   }
-  const diskTotalAll = fsSize.reduce((a, f) => a + (f.size || 0), 0)
-  const diskUsedAll = fsSize.reduce((a, f) => a + (f.used || 0), 0)
+  const fsList = fsSize || []
+  const diskTotalAll = fsList.reduce((a, f) => a + (f.size || 0), 0)
+  const diskUsedAll = fsList.reduce((a, f) => a + (f.used || 0), 0)
 
   // CPU 实际频率 = 基础频率 × % Processor Performance（si 的 avg 锁在基础频率）
   let cpuFreqGHz = null
@@ -490,7 +559,7 @@ async function getStats() {
 
   // 按物理盘分组：父级 = 容量合计/忙碌%/温度，子级 volumes = 各分区卷的用量
   const letterUsage = {}
-  for (const f of fsSize) {
+  for (const f of fsList) {
     const m = f.mount.match(/^([A-Za-z]):/)
     if (m) letterUsage[m[1].toUpperCase()] = { used: f.used, total: f.size }
   }
@@ -540,7 +609,7 @@ async function getStats() {
   }
 
   return {
-    cpu: r1(load.currentLoad),
+    cpu: r1((load && load.currentLoad) || 0),
     cpuName,
     memInfo,
     cpuFreqGHz,
@@ -548,8 +617,9 @@ async function getStats() {
     cpuTemp,
     fanCpu,
     maxFanCpu: lenovoFans.maxFanCpu,
-    memUsed: r1(mem.used / GB),
-    memTotal: r1(mem.total / GB),
+    fanDenied: lenovoDenied,
+    memUsed: r1(((mem && mem.used) || 0) / GB),
+    memTotal: r1(((mem && mem.total) || 0) / GB),
     disks,
     diskUsedAll: r1(diskUsedAll / GB),
     diskTotalAll: r1(diskTotalAll / GB),

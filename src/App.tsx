@@ -157,40 +157,28 @@ function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [expanded])
 
-  // 液态玻璃：抓"窗口背后的桌面"喂给 WebGL 折射层（见 lib/desktopGlass.ts）。
-  // 拿不到桌面流时静默失败，界面自动退回原本的 CSS 玻璃。
-  // 说明：Chromium 的 getDisplayMedia 要求用户手势，所以首次失败后会在第一次交互时重试。
+  // 液态玻璃：WebGL 折射层采样窗口背后的壁纸（见 lib/desktopGlass.ts）。
+  // 它是窗口级单例，不随组件卸载销毁——StrictMode 的双挂载和 dev 下每次 HMR 重跑 effect
+  // 都会再调一次 startDesktopGlass()，拿到的是同一个实例，不会再重复建层。
+  // 失败多为启动瞬间 GPU 尚未就绪，所以自动退避重试；全都失败就退回 CSS 玻璃。
   useEffect(() => {
-    let handle: { dispose: () => void } | null = null
     let cancelled = false
-    let retryArmed = false
+    let retryTimer = 0
+    const MAX_ATTEMPTS = 4
 
     const boot = (attempt: number) => {
-      startDesktopGlass()
-        .then((h) => {
-          if (cancelled) h.dispose()
-          else handle = h
-        })
-        .catch((err) => {
-          const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
-          console.error(`[glass] 桌面折射不可用（第 ${attempt} 次），退回 CSS 玻璃：${detail}`)
-          if (attempt === 1 && !retryArmed) {
-            retryArmed = true
-            const retry = () => {
-              window.removeEventListener('pointerdown', retry)
-              window.removeEventListener('keydown', retry)
-              boot(2)
-            }
-            window.addEventListener('pointerdown', retry, { once: true })
-            window.addEventListener('keydown', retry, { once: true })
-          }
-        })
+      startDesktopGlass().catch((err) => {
+        const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+        console.error(`[glass] 折射层不可用（第 ${attempt}/${MAX_ATTEMPTS} 次），暂用 CSS 玻璃：${detail}`)
+        if (cancelled || attempt >= MAX_ATTEMPTS) return
+        retryTimer = window.setTimeout(() => boot(attempt + 1), 1500 * attempt)
+      })
     }
     boot(1)
 
     return () => {
       cancelled = true
-      handle?.dispose()
+      clearTimeout(retryTimer)
     }
   }, [])
 
