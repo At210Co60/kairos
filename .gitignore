@@ -36,6 +36,10 @@ lhm.zip
 # 重写，属于机器本地状态，不入库。缺失时 LHM 首次运行会自动生成默认配置。
 electron/vendor/LibreHardwareMonitor/LibreHardwareMonitor.config
 
+# 内核驱动同理：LHM 运行时从内嵌资源解出来写到这里的，不是发行文件
+# (exe/dll 是 9/5 入库、构建日期 2024/11/24，这个 .sys 的时间戳是每次运行那一刻)
+electron/vendor/LibreHardwareMonitor/LibreHardwareMonitor.sys
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
